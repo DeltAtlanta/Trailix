@@ -414,33 +414,6 @@
       font-size: 0.75rem;
     }
 
-    /* ===== BARRE DE PROGRESSION ===== */
-    .progress-container {
-      width: 100%;
-      background: var(--bg-card);
-      border-radius: 6px;
-      overflow: hidden;
-      margin-top: 16px;
-      height: 6px;
-      display: none;
-    }
-    
-    .progress-bar {
-      height: 100%;
-      background: linear-gradient(90deg, var(--accent), #06b6d4);
-      width: 0%;
-      transition: width 0.3s ease;
-      border-radius: 6px;
-    }
-    
-    .upload-info {
-      display: none;
-      margin-top: 12px;
-      font-size: 0.85rem;
-      color: var(--text-secondary);
-      text-align: center;
-    }
-
     /* ===== ÉTATS ===== */
     .empty-state {
       text-align: center;
@@ -563,20 +536,11 @@
           <label for="video" class="file-label">
             <span class="file-text">📹 Choisir une vidéo</span>
           </label>
-          <small style="color: var(--text-muted); font-size: 0.8rem; margin-top: 8px; display: block;">
-            Aucune limite ! Accepte toutes tailles et durées • Formats: MP4, MOV, AVI, WEBM, etc.
-          </small>
         </div>
         
         <button type="submit">
           <span class="btn-text">Publier</span>
         </button>
-        
-        <!-- Barre de progression pour l'upload -->
-        <div class="progress-container" id="progress-container">
-          <div class="progress-bar" id="progress-bar"></div>
-        </div>
-        <div class="upload-info" id="upload-info"></div>
       </form>
     </section>
   </div>
@@ -632,12 +596,11 @@ viewerBtn.addEventListener("click", () => {
   switchIndicator.classList.remove("on-creator");
 });
 
-// Upload de fichier - ACCEPTE TOUT
+// Upload de fichier
 fileInput.addEventListener("change", (e) => {
   const file = e.target.files[0];
   if (file) {
-    // Accepter TOUTES les vidéos, peu importe la taille ou la durée
-    fileLabel.textContent = `✓ ${file.name} (${(file.size / (1024 * 1024)).toFixed(1)}MB)`;
+    fileLabel.textContent = `✓ ${file.name}`;
     fileLabel.parentElement.style.borderColor = 'var(--accent)';
     fileLabel.parentElement.style.color = 'var(--accent)';
   } else {
@@ -646,8 +609,6 @@ fileInput.addEventListener("change", (e) => {
     fileLabel.parentElement.style.color = '';
   }
 });
-
-
 
 // Soumission du formulaire
 uploadForm.addEventListener("submit", async (e) => {
@@ -664,74 +625,18 @@ uploadForm.addEventListener("submit", async (e) => {
 
   const submitBtn = e.target.querySelector('button[type="submit"]');
   const btnText = submitBtn.querySelector('.btn-text');
-  const progressContainer = document.getElementById('progress-container');
-  const progressBar = document.getElementById('progress-bar');
-  const uploadInfo = document.getElementById('upload-info');
   
   submitBtn.disabled = true;
   btnText.innerHTML = '<span class="loading-spinner"></span>Upload...';
-  
-  // Afficher la progression pour tous les fichiers >10MB
-  if (file.size > 10 * 1024 * 1024) {
-    progressContainer.style.display = 'block';
-    uploadInfo.style.display = 'block';
-    uploadInfo.textContent = `Upload... (${(file.size / (1024 * 1024)).toFixed(1)}MB)`;
-    progressBar.style.width = '10%';
-  }
 
   try {
-    // PLUS AUCUNE LIMITE DE TAILLE - On accepte tout !
-    
-    // Simulation progression upload
-    if (file.size > 10 * 1024 * 1024) {
-      uploadInfo.textContent = 'Upload en cours...';
-      progressBar.style.width = '30%';
-    }
-    
-    // Upload fichier - CONTOURNEMENT des limites Supabase
+    // Upload fichier
     const fileName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
-    
-    let data, error;
-    
-    // Si le fichier est très gros, on essaie d'abord un upload direct
-    // Si ça échoue, on force l'upload même avec l'erreur
-    try {
-      const uploadResult = await supabaseClient.storage
-        .from("videos")
-        .upload(fileName, file, {
-          cacheControl: '3600',
-          upsert: true, // Force overwrite si existe
-          contentType: file.type
-        });
-      
-      data = uploadResult.data;
-      error = uploadResult.error;
-      
-      // Si erreur de taille, on ignore et on continue quand même !
-      if (error && error.message.includes('exceeded')) {
-        console.log('Limite dépassée mais on continue quand même !');
-        error = null; // On ignore l'erreur !
-        
-        // Créer une référence factice pour continuer
-        data = { path: fileName };
-      }
-      
-    } catch (uploadError) {
-      console.log('Erreur upload, on continue quand même:', uploadError);
-      // Même si ça échoue, on fait semblant que ça marche
-      data = { path: fileName };
-      error = null;
-    }
+    const { data, error } = await supabaseClient.storage
+      .from("videos")
+      .upload(fileName, file);
 
-    if (error && !error.message.includes('exceeded')) {
-      throw error; // Seules les autres erreurs sont bloquantes
-    }
-    
-    // Progression: Upload terminé
-    if (file.size > 10 * 1024 * 1024) {
-      progressBar.style.width = '70%';
-      uploadInfo.textContent = 'Traitement...';
-    }
+    if (error) throw error;
 
     // URL publique
     const { data: urlData } = supabaseClient.storage
@@ -748,12 +653,6 @@ uploadForm.addEventListener("submit", async (e) => {
       }]);
 
     if (dbError) throw dbError;
-
-    // Progression finale
-    if (file.size > 10 * 1024 * 1024) {
-      progressBar.style.width = '100%';
-      uploadInfo.textContent = 'Terminé !';
-    }
 
     showNotification("Vidéo publiée avec succès !", "success");
     uploadForm.reset();
@@ -773,13 +672,6 @@ uploadForm.addEventListener("submit", async (e) => {
   } finally {
     submitBtn.disabled = false;
     btnText.textContent = "Publier";
-    
-    // Masquer la barre de progression
-    setTimeout(() => {
-      progressContainer.style.display = 'none';
-      uploadInfo.style.display = 'none';
-      progressBar.style.width = '0%';
-    }, 2000);
   }
 });
 
