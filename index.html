@@ -414,6 +414,33 @@
       font-size: 0.75rem;
     }
 
+    /* ===== BARRE DE PROGRESSION ===== */
+    .progress-container {
+      width: 100%;
+      background: var(--bg-card);
+      border-radius: 6px;
+      overflow: hidden;
+      margin-top: 16px;
+      height: 6px;
+      display: none;
+    }
+    
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), #06b6d4);
+      width: 0%;
+      transition: width 0.3s ease;
+      border-radius: 6px;
+    }
+    
+    .upload-info {
+      display: none;
+      margin-top: 12px;
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      text-align: center;
+    }
+
     /* ===== ÉTATS ===== */
     .empty-state {
       text-align: center;
@@ -536,11 +563,20 @@
           <label for="video" class="file-label">
             <span class="file-text">📹 Choisir une vidéo</span>
           </label>
+          <small style="color: var(--text-muted); font-size: 0.8rem; margin-top: 8px; display: block;">
+            Maximum: 5 minutes (~250MB) • Formats supportés: MP4, MOV, AVI, WEBM
+          </small>
         </div>
         
         <button type="submit">
           <span class="btn-text">Publier</span>
         </button>
+        
+        <!-- Barre de progression pour l'upload -->
+        <div class="progress-container" id="progress-container">
+          <div class="progress-bar" id="progress-bar"></div>
+        </div>
+        <div class="upload-info" id="upload-info"></div>
       </form>
     </section>
   </div>
@@ -596,19 +632,65 @@ viewerBtn.addEventListener("click", () => {
   switchIndicator.classList.remove("on-creator");
 });
 
-// Upload de fichier
+// Upload de fichier avec validation de taille
 fileInput.addEventListener("change", (e) => {
   const file = e.target.files[0];
   if (file) {
-    fileLabel.textContent = `✓ ${file.name}`;
-    fileLabel.parentElement.style.borderColor = 'var(--accent)';
-    fileLabel.parentElement.style.color = 'var(--accent)';
+    // Calcul approximatif : 5 minutes de vidéo = ~150-200MB (selon qualité)
+    const maxSize = 250 * 1024 * 1024; // 250MB pour être sûr
+    
+    if (file.size > maxSize) {
+      showNotification(`Fichier trop volumineux ! Maximum: ${Math.round(maxSize / (1024 * 1024))}MB pour ~5 minutes de vidéo`, "error");
+      fileInput.value = '';
+      fileLabel.textContent = "📹 Choisir une vidéo";
+      fileLabel.parentElement.style.borderColor = '';
+      fileLabel.parentElement.style.color = '';
+      return;
+    }
+    
+    // Vérification de la durée si possible
+    validateVideoDuration(file).then(isValid => {
+      if (!isValid) {
+        showNotification("Vidéo trop longue ! Maximum: 5 minutes", "error");
+        fileInput.value = '';
+        fileLabel.textContent = "📹 Choisir une vidéo";
+        fileLabel.parentElement.style.borderColor = '';
+        fileLabel.parentElement.style.color = '';
+      } else {
+        fileLabel.textContent = `✓ ${file.name} (${(file.size / (1024 * 1024)).toFixed(1)}MB)`;
+        fileLabel.parentElement.style.borderColor = 'var(--accent)';
+        fileLabel.parentElement.style.color = 'var(--accent)';
+      }
+    });
+    
   } else {
     fileLabel.textContent = "📹 Choisir une vidéo";
     fileLabel.parentElement.style.borderColor = '';
     fileLabel.parentElement.style.color = '';
   }
 });
+
+// Fonction pour valider la durée de la vidéo
+async function validateVideoDuration(file) {
+  return new Promise((resolve) => {
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    
+    video.onloadedmetadata = () => {
+      window.URL.revokeObjectURL(video.src);
+      const duration = video.duration;
+      const maxDurationSeconds = 5 * 60; // 5 minutes
+      resolve(duration <= maxDurationSeconds);
+    };
+    
+    video.onerror = () => {
+      window.URL.revokeObjectURL(video.src);
+      resolve(true); // Si on ne peut pas vérifier, on accepte
+    };
+    
+    video.src = URL.createObjectURL(file);
+  });
+}
 
 // Soumission du formulaire
 uploadForm.addEventListener("submit", async (e) => {
@@ -625,18 +707,51 @@ uploadForm.addEventListener("submit", async (e) => {
 
   const submitBtn = e.target.querySelector('button[type="submit"]');
   const btnText = submitBtn.querySelector('.btn-text');
+  const progressContainer = document.getElementById('progress-container');
+  const progressBar = document.getElementById('progress-bar');
+  const uploadInfo = document.getElementById('upload-info');
   
   submitBtn.disabled = true;
   btnText.innerHTML = '<span class="loading-spinner"></span>Upload...';
+  
+  // Afficher la progression pour les gros fichiers (>50MB)
+  if (file.size > 50 * 1024 * 1024) {
+    progressContainer.style.display = 'block';
+    uploadInfo.style.display = 'block';
+    uploadInfo.textContent = `Préparation... (${(file.size / (1024 * 1024)).toFixed(1)}MB)`;
+    progressBar.style.width = '10%';
+  }
 
   try {
-    // Upload fichier
+    // Double vérification avant upload
+    const maxSize = 250 * 1024 * 1024; // 250MB
+    if (file.size > maxSize) {
+      throw new Error(`Fichier trop volumineux: ${(file.size / (1024 * 1024)).toFixed(1)}MB > ${Math.round(maxSize / (1024 * 1024))}MB`);
+    }
+    
+    // Simulation progression upload
+    if (file.size > 50 * 1024 * 1024) {
+      uploadInfo.textContent = 'Upload en cours...';
+      progressBar.style.width = '30%';
+    }
+    
+    // Upload fichier avec configuration optimisée
     const fileName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
     const { data, error } = await supabaseClient.storage
       .from("videos")
-      .upload(fileName, file);
+      .upload(fileName, file, {
+        cacheControl: '3600',
+        upsert: false,
+        contentType: file.type
+      });
 
     if (error) throw error;
+    
+    // Progression: Upload terminé
+    if (file.size > 50 * 1024 * 1024) {
+      progressBar.style.width = '70%';
+      uploadInfo.textContent = 'Traitement...';
+    }
 
     // URL publique
     const { data: urlData } = supabaseClient.storage
@@ -653,6 +768,12 @@ uploadForm.addEventListener("submit", async (e) => {
       }]);
 
     if (dbError) throw dbError;
+
+    // Progression finale
+    if (file.size > 50 * 1024 * 1024) {
+      progressBar.style.width = '100%';
+      uploadInfo.textContent = 'Terminé !';
+    }
 
     showNotification("Vidéo publiée avec succès !", "success");
     uploadForm.reset();
@@ -672,6 +793,13 @@ uploadForm.addEventListener("submit", async (e) => {
   } finally {
     submitBtn.disabled = false;
     btnText.textContent = "Publier";
+    
+    // Masquer la barre de progression
+    setTimeout(() => {
+      progressContainer.style.display = 'none';
+      uploadInfo.style.display = 'none';
+      progressBar.style.width = '0%';
+    }, 2000);
   }
 });
 
