@@ -564,8 +564,11 @@
             <span class="file-text">📹 Choisir une vidéo</span>
           </label>
           <small style="color: var(--text-muted); font-size: 0.8rem; margin-top: 8px; display: block;">
-            Maximum: 5 minutes (~250MB) • Formats supportés: MP4, MOV, AVI, WEBM
+            Maximum: 50MB (limite Supabase gratuit) • Formats: MP4, MOV, AVI, WEBM
           </small>
+          <button type="button" id="compress-btn" style="display: none; margin-top: 12px; padding: 8px 16px; background: var(--bg-card); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; cursor: pointer; font-size: 0.85rem;">
+            🗜️ Compresser la vidéo
+          </button>
         </div>
         
         <button type="submit">
@@ -596,6 +599,7 @@ const viewerBtn = document.getElementById("show-viewer");
 const uploadForm = document.getElementById("upload-form");
 const fileInput = document.getElementById("video");
 const fileLabel = document.querySelector(".file-text");
+const compressBtn = document.getElementById("compress-btn");
 const switchNav = document.querySelector('.switch');
 const switchIndicator = document.querySelector('.switch-indicator');
 
@@ -636,16 +640,41 @@ viewerBtn.addEventListener("click", () => {
 fileInput.addEventListener("change", (e) => {
   const file = e.target.files[0];
   if (file) {
-    // Calcul approximatif : 5 minutes de vidéo = ~150-200MB (selon qualité)
-    const maxSize = 250 * 1024 * 1024; // 250MB pour être sûr
+    // Limitation Supabase plan gratuit : 50MB maximum
+    const maxSize = 50 * 1024 * 1024; // 50MB (limite Supabase gratuit)
     
     if (file.size > maxSize) {
-      showNotification(`Fichier trop volumineux ! Maximum: ${Math.round(maxSize / (1024 * 1024))}MB pour ~5 minutes de vidéo`, "error");
-      fileInput.value = '';
-      fileLabel.textContent = "📹 Choisir une vidéo";
-      fileLabel.parentElement.style.borderColor = '';
-      fileLabel.parentElement.style.color = '';
-      return;
+      // Proposer la compression automatique
+      const shouldCompress = confirm(`Fichier trop volumineux (${(file.size / (1024 * 1024)).toFixed(1)}MB > 50MB).\n\nVoulez-vous que je compresse automatiquement la vidéo ?`);
+      
+      if (shouldCompress) {
+        compressVideo(file).then(compressedFile => {
+          if (compressedFile) {
+            // Remplacer le fichier par la version compressée
+            const dt = new DataTransfer();
+            dt.items.add(compressedFile);
+            fileInput.files = dt.files;
+            
+            fileLabel.textContent = `✓ ${compressedFile.name} (${(compressedFile.size / (1024 * 1024)).toFixed(1)}MB - Compressée)`;
+            fileLabel.parentElement.style.borderColor = 'var(--accent)';
+            fileLabel.parentElement.style.color = 'var(--accent)';
+            showNotification("Vidéo compressée avec succès !", "success");
+          } else {
+            showNotification("Échec de la compression. Utilisez un fichier plus petit.", "error");
+            fileInput.value = '';
+            fileLabel.textContent = "📹 Choisir une vidéo";
+            fileLabel.parentElement.style.borderColor = '';
+            fileLabel.parentElement.style.color = '';
+          }
+        });
+        return;
+      } else {
+        fileInput.value = '';
+        fileLabel.textContent = "📹 Choisir une vidéo";
+        fileLabel.parentElement.style.borderColor = '';
+        fileLabel.parentElement.style.color = '';
+        return;
+      }
     }
     
     // Vérification de la durée si possible
@@ -660,6 +689,13 @@ fileInput.addEventListener("change", (e) => {
         fileLabel.textContent = `✓ ${file.name} (${(file.size / (1024 * 1024)).toFixed(1)}MB)`;
         fileLabel.parentElement.style.borderColor = 'var(--accent)';
         fileLabel.parentElement.style.color = 'var(--accent)';
+        
+        // Afficher le bouton de compression si le fichier fait plus de 30MB
+        if (file.size > 30 * 1024 * 1024) {
+          compressBtn.style.display = 'block';
+        } else {
+          compressBtn.style.display = 'none';
+        }
       }
     });
     
@@ -667,7 +703,35 @@ fileInput.addEventListener("change", (e) => {
     fileLabel.textContent = "📹 Choisir une vidéo";
     fileLabel.parentElement.style.borderColor = '';
     fileLabel.parentElement.style.color = '';
+    compressBtn.style.display = 'none';
   }
+});
+
+// Bouton de compression manuelle
+compressBtn.addEventListener("click", async () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+  
+  compressBtn.disabled = true;
+  compressBtn.textContent = "🔄 Compression...";
+  
+  const compressedFile = await compressVideo(file);
+  
+  if (compressedFile) {
+    // Remplacer le fichier
+    const dt = new DataTransfer();
+    dt.items.add(compressedFile);
+    fileInput.files = dt.files;
+    
+    fileLabel.textContent = `✓ ${compressedFile.name} (${(compressedFile.size / (1024 * 1024)).toFixed(1)}MB - Compressée)`;
+    showNotification("Vidéo compressée avec succès !", "success");
+    compressBtn.style.display = 'none';
+  } else {
+    showNotification("Échec de la compression. Essayez un fichier plus petit.", "error");
+  }
+  
+  compressBtn.disabled = false;
+  compressBtn.textContent = "🗜️ Compresser la vidéo";
 });
 
 // Fonction pour valider la durée de la vidéo
@@ -689,6 +753,85 @@ async function validateVideoDuration(file) {
     };
     
     video.src = URL.createObjectURL(file);
+  });
+}
+
+// Fonction de compression vidéo
+async function compressVideo(file) {
+  return new Promise((resolve) => {
+    showNotification("Compression en cours... Cela peut prendre quelques minutes.", "info");
+    
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const video = document.createElement('video');
+    
+    video.onloadedmetadata = () => {
+      // Réduire la résolution pour compression
+      const targetWidth = Math.min(video.videoWidth, 720); // Max 720p
+      const targetHeight = (video.videoHeight * targetWidth) / video.videoWidth;
+      
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      
+      // Créer un MediaRecorder pour enregistrer la vidéo compressée
+      const stream = canvas.captureStream(25); // 25 FPS pour réduire la taille
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'video/webm;codecs=vp8',
+        videoBitsPerSecond: 1000000 // 1 Mbps pour compression agressive
+      });
+      
+      const chunks = [];
+      
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+      
+      mediaRecorder.onstop = () => {
+        const compressedBlob = new Blob(chunks, { type: 'video/webm' });
+        const compressedFile = new File([compressedBlob], 
+          file.name.replace(/\.[^/.]+$/, '_compressed.webm'), 
+          { type: 'video/webm' }
+        );
+        
+        // Vérifier si la compression a réussi
+        if (compressedFile.size < 50 * 1024 * 1024) { // < 50MB
+          resolve(compressedFile);
+        } else {
+          resolve(null); // Échec de compression
+        }
+      };
+      
+      // Commencer l'enregistrement
+      mediaRecorder.start();
+      
+      let currentTime = 0;
+      const duration = Math.min(video.duration, 300); // Max 5 minutes
+      
+      const drawFrame = () => {
+        if (currentTime >= duration) {
+          mediaRecorder.stop();
+          return;
+        }
+        
+        video.currentTime = currentTime;
+        ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+        currentTime += 1/25; // 25 FPS
+        
+        setTimeout(drawFrame, 40); // 40ms = 25 FPS
+      };
+      
+      video.onseeked = drawFrame;
+      drawFrame();
+    };
+    
+    video.onerror = () => {
+      resolve(null); // Échec
+    };
+    
+    video.src = URL.createObjectURL(file);
+    video.load();
   });
 }
 
@@ -723,10 +866,10 @@ uploadForm.addEventListener("submit", async (e) => {
   }
 
   try {
-    // Double vérification avant upload
-    const maxSize = 250 * 1024 * 1024; // 250MB
+    // Double vérification avant upload - Limite Supabase gratuit
+    const maxSize = 50 * 1024 * 1024; // 50MB (limite Supabase gratuit)
     if (file.size > maxSize) {
-      throw new Error(`Fichier trop volumineux: ${(file.size / (1024 * 1024)).toFixed(1)}MB > ${Math.round(maxSize / (1024 * 1024))}MB`);
+      throw new Error(`Fichier trop volumineux: ${(file.size / (1024 * 1024)).toFixed(1)}MB > ${Math.round(maxSize / (1024 * 1024))}MB (limite Supabase gratuit)`);
     }
     
     // Simulation progression upload
